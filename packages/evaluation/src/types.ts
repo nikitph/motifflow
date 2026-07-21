@@ -1,0 +1,14 @@
+import type { BoundaryPolicy, GoalSpec } from "../../core/src/types.js";
+export type GovernanceMode="UNCONSTRAINED"|"PROMPT_GOVERNED"|"TYPED_WORKFLOW"|"MOTIFFLOW";
+export type FailureInjectionType="TIMEOUT_AFTER_EFFECT"|"DUPLICATE_SIGNAL"|"MISLEADING_TOOL_OUTPUT"|"STALE_EVIDENCE"|"INVENTED_EVIDENCE_ID"|"FORBIDDEN_ACTION"|"REPEATED_SEARCH"|"PREMATURE_COMPLETION"|"CONFLICTING_CONCLUSIONS"|"LATE_APPROVAL";
+export interface ToolDefinition { type:string;riskClass:"READ_ONLY"|"REVERSIBLE_WRITE"|"IRREVERSIBLE_WRITE";costUnits:number }
+export interface FailureInjection { id:string;type:FailureInjectionType;atStep:string;payload?:unknown }
+export interface ExpectedBehavior { injectionId:string;behavior:"REJECT"|"DEDUPLICATE"|"RECONCILE"|"REQUEST_EVIDENCE"|"REQUIRE_VERIFICATION"|"ESCALATE" }
+export type EvaluationStepKind="SEARCH"|"CLAIM"|"MUTATION"|"TEST"|"SIGNAL"|"APPROVAL"|"COMPLETION"|"RECONCILIATION";
+export interface EvaluationStep { stepId:string;kind:EvaluationStepKind;identityKey?:string;toolType?:string;paths?:string[];evidenceRefs?:string[];producesEvidence?:string[];hypothesesRetired?:number;expectedPostcondition?:string;terminalPredicatesSatisfied?:boolean;sideEffect?:boolean;tokens?:number;latencyMs?:number;costMinorUnits?:number }
+export interface EvaluationTask { taskId:string;initialState:unknown;goal:GoalSpec;tools:ToolDefinition[];boundaries:BoundaryPolicy[];invariants:string[];terminalPredicateIds:string[];injectedFailures:FailureInjection[];expectedCriticalBehaviors:ExpectedBehavior[];trajectory:EvaluationStep[];budgets:{maxToolCalls:number;maxTokens:number;maxCostMinorUnits:number} }
+export type TrajectoryDecision="ACCEPTED"|"REJECTED"|"DEDUPLICATED"|"RECONCILIATION_REQUIRED";
+export interface TrajectoryRecord { stepId:string;kind:EvaluationStepKind;decision:TrajectoryDecision;reasons:string[];distortionIds:string[];injections:FailureInjectionType[];toolCalls:number;tokens:number;latencyMs:number;costMinorUnits:number }
+export interface EvaluationMetrics { taskSuccess:number;invalidActionRate:number;unsupportedClaimRate:number;falseCompletionRate:number;boundaryViolations:number;recoveryAfterFailure:number;humanInterventions:number;toolCalls:number;tokens:number;latencyMs:number;costMinorUnits:number;structuralAdequacy:number;evidenceQuality:number;boundaryPreservation:number;unnecessaryComputation:number;harmfulTransitions:number }
+export interface EvaluationRun { taskId:string;mode:GovernanceMode;motifsEnabled:boolean;records:TrajectoryRecord[];metrics:EvaluationMetrics;score:number;expectedBehaviorsSatisfied:number;expectedBehaviorsTotal:number }
+export interface EvaluationReport { generatedAt:string;runs:EvaluationRun[];ranking:{mode:GovernanceMode;averageScore:number;taskSuccess:number;invalidActionRate:number;falseCompletionRate:number}[] }

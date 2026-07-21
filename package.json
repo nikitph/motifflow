@@ -1,0 +1,55 @@
+{
+  "name": "motifflow",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "motifflow": "dist/apps/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "example": "tsx examples/coding-agent.ts",
+    "evaluate": "tsx examples/evaluate.ts",
+    "deepseek:smoke": "tsx examples/deepseek-smoke.ts",
+    "test:postgres": "tsx tests/postgres.integration.ts",
+    "cli": "tsx apps/cli/index.ts",
+    "api": "tsx apps/api/index.ts",
+    "worker": "tsx apps/worker/index.ts",
+    "demo:seed": "tsx scripts/demo-seed.ts",
+    "demo:record-left": "tsx scripts/demo-record-left.ts",
+    "demo:start": "tsx apps/reconciliation-demo/src/server.ts",
+    "demo:run": "tsx scripts/demo-run.ts",
+    "demo:reset": "tsx scripts/demo-control.ts reset",
+    "demo:kill-worker": "tsx scripts/demo-control.ts kill-worker",
+    "demo:start-worker": "tsx scripts/demo-control.ts restart-worker",
+    "demo:verify": "tsx scripts/demo-verify.ts",
+    "demo:showcase": "vite --config apps/reconciliation-showcase/vite.config.ts",
+    "demo:showcase:build": "tsc -p apps/reconciliation-showcase/tsconfig.json && vite build --config apps/reconciliation-showcase/vite.config.ts"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.1.1",
+    "@types/pg": "^8.20.0",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.5",
+    "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.25.0",
+    "pg": "^8.22.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tailwind-merge": "^3.6.0"
+  }
+}

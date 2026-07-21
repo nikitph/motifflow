@@ -1,0 +1,1 @@
+import {createManifest,proposalTape,chaosPlan} from "../packages/invoice-reconciliation/src/fixtures/scenario.js";console.log(JSON.stringify({manifest:createManifest(),proposalTape,chaosPlan},null,2));

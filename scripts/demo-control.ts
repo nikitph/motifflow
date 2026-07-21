@@ -1,0 +1,1 @@
+const action=process.argv[2],session=process.env.DEMO_SESSION_ID,base=process.env.DEMO_URL??"http://127.0.0.1:3400";if(!action||!session)throw new Error("Set DEMO_SESSION_ID and provide an action");const response=await fetch(`${base}/demo/sessions/${session}/${action}`,{method:"POST"});console.log(await response.text());if(!response.ok)process.exitCode=1;

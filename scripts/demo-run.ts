@@ -1,0 +1,3 @@
+import {DemoSession} from "../packages/demo-orchestrator/src/session.js";
+export async function runCanonical(){const s=new DemoSession("canonical-demo");await s.initialize();await s.start();await s.next();await s.next();await s.killWorker();const recovery=await s.restartWorker();await s.approve(s.token()!);await s.next();await s.next();await s.next();await s.next();await s.next();return{s,recovery}}
+if(import.meta.url===`file://${process.argv[1]}`){const {s,recovery}=await runCanonical();console.log(JSON.stringify({manifestId:s.manifest.manifestId,scene:s.currentScene,recovery:recovery.assertions,comparison:s.comparison(),leftTimeline:s.ungoverned.state.timeline,rightTimeline:s.governed.state().timeline},null,2))}
