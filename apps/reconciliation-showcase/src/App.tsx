@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowRight, BadgeCheck, CircleStop, Gauge, Pause, Play, RotateCcw,
-  ShieldCheck, Sparkles, StepForward, TriangleAlert, Zap,
+  Activity, ArrowRight, BadgeCheck, CircleStop, Gauge, Pause, Play, QrCode, RotateCcw,
+  ShieldCheck, Sparkles, StepForward, TriangleAlert, Wifi, WifiOff, X, Zap,
 } from "lucide-react";
 import { CodexHeader } from "@/components/brainless/codex/codex-header";
 import { CodexMessage } from "@/components/brainless/codex/codex-message";
@@ -19,10 +19,28 @@ import { ClaudePrompt } from "@/components/brainless/claude/claude-prompt";
 type Tone = "neutral" | "danger" | "success" | "warning";
 type Event = { command: string; result?: string; detail?: string; status?: "ok" | "error" | "run" };
 type AgentSkin = "codex" | "claude";
+type Experience = "replay" | "live";
+const liveAvailable = import.meta.env.DEV || import.meta.env.VITE_ENABLE_LIVE === "true";
 type Scene = {
   kicker: string; title: string; proposition: string; leftLabel: string; rightLabel: string;
-  leftAmount: number; rightAmount: number; leftEvents: Event[]; rightEvents: Event[];
+  leftAmount: number | null; rightAmount: number | null; leftEvents: Event[]; rightEvents: Event[];
   leftTone: Tone; rightTone: Tone; narration: string;
+};
+
+type LiveView = {
+  sessionId: string;
+  currentScene: string;
+  currentProposalSequence: number;
+  state: string;
+  workerOnline: boolean;
+  workerPid?: number;
+  currentProposal?: { requestedCommand?: { type?: string } };
+  left: { actualTransferredMinor: number; timeline: string[]; paymentIds: string[] };
+  right: { timeline: string[]; phase: string; duplicateSignalsIgnored: number; approval?: { state: string }; logicalPayment?: { state: string } };
+  comparison: {
+    ungoverned: { amountTransferredMinor: number; excessTransferredMinor: number; finalBalanceMinor: number };
+    governed: { amountTransferredMinor: number; duplicateEffects: number; finalBalanceMinor?: number; approvalRecorded: boolean };
+  };
 };
 
 const scenes: Scene[] = [
@@ -32,7 +50,7 @@ const scenes: Scene[] = [
     leftLabel: "direct execution", rightLabel: "governed execution", leftAmount: 0, rightAmount: 0,
     leftTone: "neutral", rightTone: "neutral", narration: "One recorded proposal tape enters both systems. Only the execution architecture changes.",
     leftEvents: [{ command: "Loaded canonical proposal tape", result: "6 proposals" }],
-    rightEvents: [{ command: "Verified proposal tape hash", result: "match" }, { command: "Registered goal + invariants", result: "10 active" }],
+    rightEvents: [{ command: "Loaded governed workflow", result: "ready" }, { command: "Registered goal + invariants", result: "10 active" }],
   },
   {
     kicker: "01 · EVIDENCE", title: "The agent reaches for the first plausible ledger.",
@@ -65,7 +83,7 @@ const scenes: Scene[] = [
   {
     kicker: "05 · AMBIGUITY", title: "The payment succeeds. The request times out.",
     proposition: "PAYMENT PROVIDER · timeout after commit", leftLabel: "retry looks reasonable", rightLabel: "outcome unknown",
-    leftAmount: 200_000, rightAmount: 150_000, leftTone: "danger", rightTone: "warning", narration: "This is where reliable-looking agents become dangerous. MotifFlow records ambiguity instead of pretending failure.",
+    leftAmount: 200_000, rightAmount: null, leftTone: "danger", rightTone: "warning", narration: "This is where reliable-looking agents become dangerous. MotifFlow records ambiguity instead of pretending failure.",
     leftEvents: [{ command: "POST /payments", result: "timeout", status: "error", detail: "Client observed failure · provider committed effect" }],
     rightEvents: [{ command: "Finance approval resolved", result: "GRANTED" }, { command: "Executed stable idempotency key", result: "timeout", status: "error" }, { command: "Marked payment outcome", result: "UNKNOWN", status: "run" }],
   },
@@ -92,7 +110,7 @@ const scenes: Scene[] = [
   },
 ];
 
-const formatINR = (value: number) => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(value);
+const formatINR = (value: number | null) => value === null ? "?" : new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(value);
 
 function DecisionGate() {
   const [decision, setDecision] = useState("approve");
@@ -104,7 +122,7 @@ function DecisionGate() {
         <span aria-hidden>{decision === option.id ? "●" : "○"}</span><span>{option.label}<small>{option.meta}</small></span>
       </button>)}
     </div>
-    <div className="decision-foot">single-use · expires in 14:32 · evidence attached</div>
+    <div className="decision-foot">single-use · evidence attached</div>
   </div>;
 }
 
@@ -177,6 +195,162 @@ function Terminal({ side, scene, sceneIndex, skin }: { side: "left" | "right"; s
   return skin === "claude" ? <ClaudeTerminal side={side} scene={scene} sceneIndex={sceneIndex}/> : <CodexTerminal side={side} scene={scene} sceneIndex={sceneIndex}/>;
 }
 
+const liveSceneIndexes: Record<string, number> = {
+  INTRO: 0, STALE_EVIDENCE: 1, DISCREPANCY: 2, AUTHORITY: 3, WORKER_KILL: 4,
+  PAYMENT_TIMEOUT: 5, AMBIGUOUS_RETRY: 6, DUPLICATE_WEBHOOK: 7,
+  PREMATURE_COMPLETION: 7, FINAL_COMPARISON: 8,
+};
+
+function timelineEvents(values: string[], governed: boolean): Event[] {
+  return values.slice(-6).map(value => ({
+    command: value.replaceAll("_", " ").toLowerCase(),
+    result: governed ? "event committed" : "executed",
+    status: /REJECTED|UNKNOWN|DUPLICATE|TIMEOUT/.test(value) ? "error" : "ok",
+  }));
+}
+
+function sceneFromLive(view: LiveView): { scene: Scene; index: number } {
+  const index = liveSceneIndexes[view.currentScene] ?? 0;
+  const base = scenes[index]!;
+  const outcomeUnknown = view.right.logicalPayment?.state === "OUTCOME_UNKNOWN";
+  return {
+    index,
+    scene: {
+      ...base,
+      proposition: view.currentScene === "WORKER_KILL" ? base.proposition : view.currentProposal?.requestedCommand?.type ?? base.proposition,
+      leftAmount: view.comparison.ungoverned.amountTransferredMinor / 100,
+      rightAmount: outcomeUnknown ? null : view.comparison.governed.amountTransferredMinor / 100,
+      leftEvents: timelineEvents(view.left.timeline, false).length ? timelineEvents(view.left.timeline, false) : [{ command: "Live session connected", result: "waiting" }],
+      rightEvents: timelineEvents(view.right.timeline, true),
+      rightLabel: !view.workerOnline ? "worker offline · state durable" : base.rightLabel,
+      rightTone: !view.workerOnline ? "danger" : base.rightTone,
+    },
+  };
+}
+
+function LiveAuditLog({ view }: { view: LiveView }) {
+  return <details className="audit-log" open={view.currentScene === "FINAL_COMPARISON"}>
+    <summary><span><Activity size={15}/>Live event timeline</span><b>{view.left.timeline.length + view.right.timeline.length} events</b></summary>
+    <div className="audit-columns">
+      <div><h3>Direct executor</h3><ol>{view.left.timeline.map((event, index) => <li key={`${event}-${index}`}><span>{String(index + 1).padStart(2,"0")}</span>{event}</li>)}</ol></div>
+      <div><h3>MotifFlow event stream</h3><ol>{view.right.timeline.map((event, index) => <li key={`${event}-${index}`}><span>{String(index + 1).padStart(2,"0")}</span>{event.replaceAll("_", " ")}</li>)}</ol></div>
+    </div>
+  </details>;
+}
+
+function ReplayAuditLog() {
+  const left = scenes.flatMap(scene => scene.leftEvents.map(event => event.command));
+  const right = scenes.flatMap(scene => scene.rightEvents.map(event => event.command));
+  return <details className="audit-log replay-audit">
+    <summary><span><Activity size={15}/>Inspectable trajectory</span><b>{left.length + right.length} recorded steps</b></summary>
+    <div className="audit-columns">
+      <div><h3>Direct executor</h3><ol>{left.map((event, index) => <li key={`${event}-${index}`}><span>{String(index + 1).padStart(2,"0")}</span>{event}</li>)}</ol></div>
+      <div><h3>MotifFlow</h3><ol>{right.map((event, index) => <li key={`${event}-${index}`}><span>{String(index + 1).padStart(2,"0")}</span>{event}</li>)}</ol></div>
+    </div>
+  </details>;
+}
+
+function LiveDemo({ skin }: { skin: AgentSkin }) {
+  const [view, setView] = useState<LiveView>();
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const [qr, setQr] = useState<{ url: string; qr: string }>();
+  const started = useRef(false);
+
+  async function connect() {
+    setBusy(true); setError(undefined);
+    try {
+      const response = await fetch("/demo/sessions", { method: "POST" });
+      const payload = await response.json() as LiveView & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Could not start the live session");
+      setView(payload);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Live runtime unavailable"); }
+    finally { setBusy(false); }
+  }
+
+  useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+    void connect();
+  }, []);
+
+  useEffect(() => {
+    if (!view?.sessionId) return;
+    const stream = new EventSource(`/demo/sessions/${view.sessionId}/stream`);
+    stream.onmessage = event => setView(JSON.parse(event.data) as LiveView);
+    stream.onerror = () => setError("Live event stream disconnected. The runtime may still be running.");
+    return () => stream.close();
+  }, [view?.sessionId]);
+
+  async function action(name: string) {
+    if (!view) return;
+    setBusy(true); setError(undefined);
+    try {
+      const response = await fetch(`/demo/sessions/${view.sessionId}/${name}`, { method: "POST" });
+      const payload = await response.json() as (LiveView & { error?: string }) | { view: LiveView; error?: string };
+      if (!response.ok) throw new Error("error" in payload && payload.error ? payload.error : "Runtime action failed");
+      setView("view" in payload ? payload.view : payload);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Runtime action failed"); }
+    finally { setBusy(false); }
+  }
+
+  async function openApproval() {
+    if (!view) return;
+    setBusy(true);
+    try {
+      const response = await fetch(`/demo/sessions/${view.sessionId}/approval-qr`);
+      const payload = await response.json() as { url: string; qr: string; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Could not create approval link");
+      setQr(payload);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not create approval link"); }
+    finally { setBusy(false); }
+  }
+
+  if (!view) return <section className="live-shell live-empty">
+    <div className="live-pulse"><Activity size={22}/></div><h2>{busy ? "Starting a real MotifFlow session…" : "Live runtime unavailable"}</h2>
+    {error ? <p>{error}</p> : <p>Creating workflow, activity worker, and event stream.</p>}
+    {!busy ? <button className="primary-button" onClick={() => void connect()}>Try again</button> : null}
+  </section>;
+
+  const live = sceneFromLive(view);
+  const approvalPending = view.right.approval?.state === "PENDING";
+  const approvalGranted = view.right.approval?.state === "GRANTED";
+  const atAuthority = view.currentScene === "AUTHORITY";
+  const complete = view.currentScene === "FINAL_COMPARISON";
+  return <section className="live-shell" aria-label="Live MotifFlow session">
+    <div className="live-banner">
+      <div><span className="live-beacon"/><strong>NOW LIVE</strong><code>{view.sessionId.slice(0, 18)}…</code></div>
+      <div className={view.workerOnline ? "online" : "offline"}>{view.workerOnline ? <Wifi size={14}/> : <WifiOff size={14}/>}worker {view.workerOnline ? `online · pid ${view.workerPid ?? "—"}` : "terminated"}</div>
+    </div>
+    <div className="story-bar">
+      <div className="story-copy"><span>{live.scene.kicker}</span><h2>{live.scene.title}</h2><p>{live.scene.narration}</p></div>
+      <div className="runtime-state"><small>WORKFLOW STATE</small><b>{view.state.replaceAll("_", " ")}</b><span>{view.right.phase?.replaceAll("_", " ")}</span></div>
+    </div>
+    <div className="proposal-rail"><span>LIVE MODEL PROPOSAL</span><code>{live.scene.proposition}</code><div><Activity size={14}/><b>SSE CONNECTED</b></div></div>
+    <div className="terminal-grid"><Terminal key={`live-left-${live.index}`} side="left" scene={live.scene} sceneIndex={live.index} skin={skin}/><Terminal key={`live-right-${live.index}`} side="right" scene={live.scene} sceneIndex={live.index} skin={skin}/></div>
+    <div className="live-controls" aria-label="Live demo controls">
+      <div className="control-primary">
+        {view.state === "READY" ? <button className="primary-button" disabled={busy} onClick={() => void action("start")}><Play size={16}/>Start live flow</button> : null}
+        {view.state === "WORKER_OFFLINE" ? <button className="primary-button" disabled={busy} onClick={() => void action("restart-worker")}><RotateCcw size={16}/>Restart worker + recover</button> : null}
+        {atAuthority && approvalPending ? <button className="primary-button" disabled={busy} onClick={() => void openApproval()}><QrCode size={16}/>Approve from phone</button> : null}
+        {view.state !== "READY" && view.state !== "WORKER_OFFLINE" && (!atAuthority || approvalGranted) && !complete ? <button className="primary-button" disabled={busy} onClick={() => void action("next")}><StepForward size={16}/>Next live step</button> : null}
+        {complete ? <button className="primary-button" disabled={busy} onClick={() => void action("reset")}><RotateCcw size={16}/>New live session</button> : null}
+      </div>
+      <div className="control-secondary">
+        <button disabled={busy || !view.workerOnline || !atAuthority} onClick={() => void action("kill-worker")} className="danger-control"><CircleStop size={15}/>Kill governed worker</button>
+        <button disabled={busy} onClick={() => void action("reset")}><RotateCcw size={15}/>Reset</button>
+      </div>
+      {error ? <p role="alert">{error}</p> : null}
+    </div>
+    <LiveAuditLog view={view}/>
+    {qr ? <div className="modal-backdrop" role="presentation"><section className="approval-modal" role="dialog" aria-modal="true" aria-labelledby="approval-title">
+      <button className="modal-close" aria-label="Close approval dialog" onClick={() => setQr(undefined)}><X size={18}/></button>
+      <span className="modal-kicker">DURABLE AUTHORITY</span><h2 id="approval-title">Approve from your phone</h2><p>Scan this code. The approval is single-use and the live screen updates over SSE.</p>
+      <img src={qr.qr} alt="QR code for the payment approval page"/><a href={qr.url} target="_blank" rel="noreferrer">Open approval page</a>
+    </section></div> : null}
+  </section>;
+}
+
 function Metric({ label, value, note, good }: { label: string; value: string; note: string; good?: boolean }) {
   return <div className={`metric ${good ? "metric-good" : ""}`}><small>{label}</small><strong>{value}</strong><span>{note}</span></div>;
 }
@@ -185,6 +359,8 @@ export function App() {
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [skin, setSkin] = useState<AgentSkin>("codex");
+  const [experience, setExperience] = useState<Experience>("replay");
+  const [presenter, setPresenter] = useState(false);
   const scene = scenes[index]!;
   useEffect(() => {
     if (!playing) return;
@@ -194,47 +370,56 @@ export function App() {
   }, [playing, index]);
   const progress = useMemo(() => (index / (scenes.length - 1)) * 100, [index]);
   const restart = () => { setIndex(0); setPlaying(true); };
-  const togglePlayback = () => index === scenes.length - 1 ? restart() : setPlaying(value => !value);
+  const togglePlayback = () => {
+    if (presenter) { setIndex(value => Math.min(value + 1, scenes.length - 1)); return; }
+    if (index === scenes.length - 1) restart(); else setPlaying(value => !value);
+  };
+  function chooseExperience(value: Experience) { setPlaying(false); setExperience(value); }
+  function togglePresenter() { setPlaying(false); setPresenter(value => !value); }
 
-  return <main>
+  return <main className={presenter ? "presenter" : undefined}>
     <header className="site-header">
       <a className="brand" href="#top" aria-label="MotifFlow home"><span className="brand-mark"><Sparkles size={16}/></span><span>Motif<span>Flow</span></span></a>
-      <div className="header-proof"><BadgeCheck size={15}/><span>canonical run verified</span><code>manifest-aa9080</code></div>
+      {liveAvailable ? <div className="experience-switch" role="radiogroup" aria-label="Demo experience">
+        <button role="radio" aria-checked={experience === "replay"} onClick={() => chooseExperience("replay")}>Guided replay</button>
+        <button role="radio" aria-checked={experience === "live"} onClick={() => chooseExperience("live")}><span className="mini-beacon"/>Now live</button>
+      </div> : <div className="hosted-label"><BadgeCheck size={14}/>Hosted guided replay</div>}
       <div className="skin-switch" role="radiogroup" aria-label="Agent interface">
         <button role="radio" aria-checked={skin === "codex"} onClick={() => setSkin("codex")}>Codex</button>
         <button role="radio" aria-checked={skin === "claude"} onClick={() => setSkin("claude")}>Claude Code</button>
       </div>
-      <button className="quiet-button" onClick={restart}><RotateCcw size={14}/>Replay</button>
+      <button className={`quiet-button ${presenter ? "active" : ""}`} aria-pressed={presenter} onClick={togglePresenter}><Gauge size={14}/>Presenter</button>
     </header>
 
     <section className="hero" id="top">
       <div className="eyebrow"><span>AGENTIC EXECUTION, GOVERNED</span><i/></div>
       <h1>Same intelligence.<br/><em>Safer reality.</em></h1>
-      <p>Watch one coding agent reconcile a real-world invoice in two execution environments—and see where reliability actually comes from.</p>
+      <p>Watch one AI agent reconcile a real-world invoice in two execution environments—and see where reliability actually comes from.</p>
       <div className="hero-actions">
-        <button className="primary-button" onClick={togglePlayback}>{playing ? <Pause size={17}/> : <Play size={17} fill="currentColor"/>}{playing ? "Pause story" : index === scenes.length - 1 ? "Replay story" : "Play the story"}</button>
-        <span><Zap size={15}/> 38 second guided demo</span>
+        {experience === "replay" ? <button className="primary-button" onClick={togglePlayback}>{presenter ? <StepForward size={17}/> : playing ? <Pause size={17}/> : <Play size={17} fill="currentColor"/>}{presenter ? "Next scene" : playing ? "Pause story" : index === scenes.length - 1 ? "Replay story" : "Play the story"}</button> : <button className="primary-button" onClick={() => document.querySelector(".live-shell")?.scrollIntoView({ behavior: "smooth" })}><Activity size={17}/>Go to live session</button>}
+        <span>{experience === "replay" ? <><Zap size={15}/>{presenter ? " manual presenter pacing" : " 38 second guided demo"}</> : <><span className="mini-beacon"/>real runtime · real worker · real approval</>}</span>
       </div>
     </section>
 
-    <section className="stage" aria-label="Invoice reconciliation comparison">
+    {experience === "live" ? <LiveDemo skin={skin}/> : <section className="stage" aria-label="Invoice reconciliation comparison">
       <div className="story-bar">
         <div className="story-copy"><span>{scene.kicker}</span><h2>{scene.title}</h2><p>{scene.narration}</p></div>
         <div className="story-controls">
-          <button onClick={() => setPlaying(value => !value)} aria-label={playing ? "Pause automatic playback" : "Start automatic playback"}>{playing ? <Pause/> : <Play/>}</button>
+          {!presenter ? <button onClick={() => setPlaying(value => !value)} aria-label={playing ? "Pause automatic playback" : "Start automatic playback"}>{playing ? <Pause/> : <Play/>}</button> : null}
           <button onClick={() => { setPlaying(false); setIndex(value => Math.min(value + 1, scenes.length - 1)); }} aria-label="Next scene"><StepForward/></button>
           <span>{String(index + 1).padStart(2,"0")} / {String(scenes.length).padStart(2,"0")}</span>
         </div>
       </div>
-      <div className="proposal-rail"><span>IDENTICAL MODEL PROPOSAL</span><code>{scene.proposition}</code><div><span>SHA-256</span><b>9f73…c21a</b><BadgeCheck size={14}/></div></div>
-      <div className="terminal-grid"><Terminal side="left" scene={scene} sceneIndex={index} skin={skin}/><Terminal side="right" scene={scene} sceneIndex={index} skin={skin}/></div>
+      <div className="proposal-rail"><span>SAME MODEL PROPOSAL</span><code>{scene.proposition}</code><div><BadgeCheck size={14}/><b>TESTED SCENARIO</b></div></div>
+      <div className="terminal-grid"><Terminal key={`replay-left-${index}`} side="left" scene={scene} sceneIndex={index} skin={skin}/><Terminal key={`replay-right-${index}`} side="right" scene={scene} sceneIndex={index} skin={skin}/></div>
       <div className="scene-nav" aria-label="Demo scenes">
         <div className="progress-track"><i style={{width:`${progress}%`}}/></div>
         <div className="scene-buttons">{scenes.map((item, sceneIndex) => <button key={item.kicker} aria-label={`Show ${item.kicker}`} aria-current={sceneIndex === index ? "step" : undefined} onClick={() => {setPlaying(false);setIndex(sceneIndex);}}><span>{sceneIndex}</span><small>{item.kicker.replace(/^\d+ · /, "")}</small></button>)}</div>
       </div>
-    </section>
+      {index === scenes.length - 1 ? <ReplayAuditLog/> : null}
+    </section>}
 
-    <section className={`outcome ${index === scenes.length - 1 ? "outcome-visible" : ""}`} aria-hidden={index !== scenes.length - 1}>
+    {experience === "replay" ? <section className={`outcome ${index === scenes.length - 1 ? "outcome-visible" : ""}`} aria-hidden={index !== scenes.length - 1}>
       <div className="outcome-intro"><div className="eyebrow"><span>THE BUSINESS CASE</span><i/></div><h2>The model wasn’t the control.<br/>The runtime was.</h2><p>MotifFlow turns probabilistic intent into deterministic, auditable execution.</p></div>
       <div className="metric-grid">
         <Metric label="UNGOVERNED TRANSFER" value="₹4,00,000" note="₹2,50,000 excess" />
@@ -242,7 +427,7 @@ export function App() {
         <Metric label="DUPLICATE EFFECTS" value="0" note="stable idempotency" good />
         <Metric label="FINAL BALANCE" value="₹0" note="10/10 predicates verified" good />
       </div>
-    </section>
+    </section> : null}
 
     <footer><div><Gauge size={16}/><span>Not a model demo. An execution architecture demo.</span></div><div className="footer-signals"><span><TriangleAlert size={14}/>ambiguity contained</span><span><CircleStop size={14}/>authority enforced</span><span><ShieldCheck size={14}/>outcomes verified</span><ArrowRight size={15}/></div></footer>
   </main>;

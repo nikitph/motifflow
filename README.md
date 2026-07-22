@@ -75,10 +75,14 @@ npm run demo:start
 
 Open `http://127.0.0.1:3400`. See [the demo guide](./docs/demo/reconciliation-demo.md) and [run of show](./docs/demo/run-of-show.md).
 
-For the presentation-first UI, run the deterministic static showcase:
+For the presentation-first UI, run the showcase. Start the runtime too when you want the styled **Now live** flow:
 
 ```bash
+npm run demo:start
+# in another terminal
 npm run demo:showcase
 ```
 
-Open `http://127.0.0.1:3500`. This version replays the verified canonical outcome without invoking the runtime or payment simulator. Its presentation switcher offers complete Codex and Claude Code treatments built from accessible [brainless](https://brainless.swerdlow.dev) components, including semantic messages, disclosures, task lists, live thinking states, composers, and keyboard-operable approval controls.
+Open `http://127.0.0.1:3500`. **Guided replay** is deterministic and requires no runtime. **Now live** creates a real session, consumes its SSE stream, kills and restarts the supervised worker, opens the phone approval QR, and renders the actual event timeline. For approval from a physical phone, open the `Network` URL printed by Vite so the QR contains a LAN-reachable address. The presentation switcher offers complete Codex and Claude Code treatments built from accessible [brainless](https://brainless.swerdlow.dev) components, including semantic messages, disclosures, task lists, live thinking states, composers, and keyboard-operable approval controls.
+
+The hosted guided replay is published at [nikitph.github.io/motifflow](https://nikitph.github.io/motifflow/). GitHub Pages deploys automatically from `main`; live-runtime controls remain local by design.
